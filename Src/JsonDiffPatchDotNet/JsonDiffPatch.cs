@@ -69,7 +69,7 @@ namespace JsonDiffPatchDotNet
 
 			if (!JToken.DeepEquals(left, right))
 			{
-				return new JArray(left, right);
+				return new JArray(0, right);
 			}				
 
 			return null;
@@ -159,118 +159,6 @@ namespace JsonDiffPatchDotNet
 			return null;
 		}
 
-		/// <summary>
-		/// Unpatch a JSON object
-		/// </summary>
-		/// <param name="right">Patched JSON object</param>
-		/// <param name="patch">JSON Patch Document</param>
-		/// <returns>Unpatched JSON object</returns>
-		/// <exception cref="System.IO.InvalidDataException">Thrown if the patch document is invalid</exception>
-		public JToken Unpatch(JToken right, JToken patch)
-		{
-			if (patch == null)
-				return right;
-
-			if (patch.Type == JTokenType.Object)
-			{
-				var patchObj = (JObject)patch;
-				JProperty arrayDiffCanary = patchObj.Property("_t");
-
-				if (right != null
-					&& right.Type == JTokenType.Array
-					&& arrayDiffCanary != null
-					&& arrayDiffCanary.Value.Type == JTokenType.String
-					&& arrayDiffCanary.Value.ToObject<string>() == "a")
-				{
-					return ArrayUnpatch((JArray)right, patchObj);
-				}
-
-				return ObjectUnpatch(right as JObject, patchObj);
-			}
-
-			if (patch.Type == JTokenType.Array)
-			{
-				var patchArray = (JArray)patch;
-
-				if (patchArray.Count == 1)	// Add (we need to remove the property)
-				{
-					return null;
-				}
-
-				if (patchArray.Count == 2)	// Replace
-				{
-					return patchArray[0];
-				}
-
-				if (patchArray.Count == 3)	// Delete, Move or TextDiff
-				{
-					if (patchArray[2].Type != JTokenType.Integer)
-						throw new InvalidDataException("Invalid patch object");
-
-					int op = patchArray[2].Value<int>();
-
-					if (op == 0)
-					{
-						return patchArray[0];
-					}
-					if (op == 2)
-					{
-						if (right.Type != JTokenType.String)
-							throw new InvalidDataException("Invalid patch object");
-
-						var dmp = new diff_match_patch();
-						List<Patch> patches = dmp.patch_fromText(patchArray[0].ToObject<string>());
-
-						if (!patches.Any())
-							throw new InvalidDataException("Invalid textline");
-
-						var unpatches = new List<Patch>();
-						for (int i = patches.Count - 1; i >= 0; --i)
-						{
-							Patch p = patches[i];
-							var u = new Patch
-							{
-								length1 = p.length1,
-								length2 = p.length2,
-								start1 = p.start1,
-								start2 = p.start2
-							};
-
-							foreach (Diff d in p.diffs)
-							{
-								if (d.operation == Operation.DELETE)
-								{
-									u.diffs.Add(new Diff(Operation.INSERT, d.text));
-								}
-								else if (d.operation == Operation.INSERT)
-								{
-									u.diffs.Add(new Diff(Operation.DELETE, d.text));
-								}
-								else
-								{
-									u.diffs.Add(d);
-								}
-							}
-							unpatches.Add(u);
-						}
-
-						object[] result = dmp.patch_apply(unpatches, right.Value<string>());
-						var unpatchResults = (bool[])result[1];
-						if (unpatchResults.Any(x => !x))
-							throw new InvalidDataException("Text patch failed");
-
-						string left = (string)result[0];
-						return left;
-					}
-					throw new InvalidDataException("Invalid patch object");
-				}
-
-				throw new InvalidDataException("Invalid patch object");
-			}
-
-			return null;
-		}
-
 		#region String Overrides
 
 		/// <summary>
@@ -299,19 +187,6 @@ namespace JsonDiffPatchDotNet
 		{
 			JToken patchedObj = Patch(JToken.Parse(left ?? ""), JToken.Parse(patch ?? ""));
 			return patchedObj?.ToString();
-		}
-
-		/// <summary>
-		/// Unpatch a JSON object
-		/// </summary>
-		/// <param name="right">Patched JSON object</param>
-		/// <param name="patch">JSON Patch Document</param>
-		/// <returns>Unpatched JSON object</returns>
-		/// <exception cref="System.IO.InvalidDataException">Thrown if the patch document is invalid</exception>
-		public string Unpatch(string right, string patch)
-		{
-			JToken unpatchedObj = Unpatch(JToken.Parse(right ?? ""), JToken.Parse(patch ?? ""));
-			return unpatchedObj?.ToString();
 		}
 
 		#endregion
@@ -344,7 +219,7 @@ namespace JsonDiffPatchDotNet
 
 				if (rp == null)
 				{
-					diffPatch.Add(new JProperty(lp.Name, new JArray(lp.Value, 0, (int)DiffOperation.Deleted)));
+					diffPatch.Add(new JProperty(lp.Name, new JArray(0, 0, (int)DiffOperation.Deleted)));
 					continue;
 				}
 
@@ -411,7 +286,7 @@ namespace JsonDiffPatchDotNet
 				// Trivial case, a block (1 or more consecutive items) was removed
 				for (int index = commonHead; index < left.Count - commonTail; ++index)
 				{
-					result[$"_{index}"] = new JArray(left[index], 0, (int)DiffOperation.Deleted);
+					result[$"_{index}"] = new JArray(0, 0, (int)DiffOperation.Deleted);
 				}
 
 				return result;
@@ -427,7 +302,7 @@ namespace JsonDiffPatchDotNet
 				if (lcs.Indices1.IndexOf(index - commonHead) < 0)
 				{
 					// Removed
-					result[$"_{index}"] = new JArray(left[index], 0, (int)DiffOperation.Deleted);
+					result[$"_{index}"] = new JArray(0, 0, (int)DiffOperation.Deleted);
 				}
 			}
 
@@ -560,113 +435,5 @@ namespace JsonDiffPatchDotNet
 			return left;
 		}
 
-		private JObject ObjectUnpatch(JObject obj, JObject patch)
-		{
-			if (obj == null)
-				obj = new JObject();
-			if (patch == null)
-				return obj;
-
-			var target = (JObject)obj.DeepClone();
-
-			foreach (var diff in patch.Properties())
-			{
-				JProperty property = target.Property(diff.Name);
-				JToken patchValue = diff.Value;
-
-				// We need to special case addition when doing objects since an undo add is a removal of a property
-				// not a null assignment
-				if (patchValue.Type == JTokenType.Array && ((JArray)patchValue).Count == 1)
-				{
-					target.Remove(property.Name);
-				}
-				else
-				{
-					if (property == null)
-					{
-						target.Add(new JProperty(diff.Name, Unpatch(null, patchValue)));
-					}
-					else
-					{
-						property.Value = Unpatch(property.Value, patchValue);
-					}
-				}
-			}
-
-			return target;
-		}
-
-		private JArray ArrayUnpatch(JArray right, JObject patch)
-		{
-			var toRemove = new List<JProperty>();
-			var toInsert = new List<JProperty>();
-			var toModify = new List<JProperty>();
-
-			foreach (JProperty op in patch.Properties())
-			{
-				if (op.Name == "_t")
-					continue;
-
-				var value = op.Value as JArray;
-
-				if (op.Name.StartsWith("_"))
-				{
-					// removed item from original array
-					if (value != null && value.Count == 3 && (value[2].ToObject<int>() == (int)DiffOperation.Deleted || value[2].ToObject<int>() == (int)DiffOperation.ArrayMove))
-					{
-						var newOp = new JProperty(value[1].ToObject<int>().ToString(), op.Value);
-
-						if (value[2].ToObject<int>() == (int)DiffOperation.ArrayMove)
-						{
-							toInsert.Add(new JProperty(op.Name.Substring(1), new JArray(right[value[1].ToObject<int>()].DeepClone())));
-							toRemove.Add(newOp);
-						}
-						else
-						{
-							toInsert.Add(new JProperty(op.Name.Substring(1), new JArray(value[0])));
-						}
-					}
-					else
-					{
-						throw new Exception($"Only removal or move can be applied at original array indices. Context: {value}");
-					}
-				}
-				else
-				{
-					if (value != null && value.Count == 1)
-					{
-						toRemove.Add(op);
-					}
-					else
-					{
-						toModify.Add(op);
-					}
-				}
-			}
-
-			// first modify entries
-			foreach (var op in toModify)
-			{
-				JToken p = Unpatch(right[int.Parse(op.Name)], op.Value);
-				right[int.Parse(op.Name)] = p;
-			}
-
-			// remove items, in reverse order to avoid sawing our own floor
-			toRemove.Sort((x, y) => int.Parse(x.Name).CompareTo(int.Parse(y.Name)));
-			for (int i = toRemove.Count - 1; i >= 0; --i)
-			{
-				JProperty op = toRemove[i];
-				right.RemoveAt(int.Parse(op.Name));
-			}
-
-			// insert items, in reverse order to avoid moving our own floor
-			toInsert.Sort((x, y) => int.Parse(x.Name).CompareTo(int.Parse(y.Name)));
-			foreach (var op in toInsert)
-			{
-				right.Insert(int.Parse(op.Name), ((JArray)op.Value)[0]);
-			}
-
-			return right;
-		}
 	}
 }
